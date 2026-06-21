@@ -24,6 +24,26 @@ def threshold_for_far(fpr: np.ndarray, tpr: np.ndarray, thresholds: np.ndarray, 
     return float(thresholds[idx]), float(tpr[idx]), float(fpr[idx])
 
 
+def chunked_pair_scores(
+    embeds: np.ndarray,
+    pair_a: np.ndarray,
+    pair_b: np.ndarray,
+    chunk: int = 8192,
+) -> np.ndarray:
+    pair_a = np.asarray(pair_a)
+    pair_b = np.asarray(pair_b)
+    if len(pair_a) != len(pair_b):
+        raise ValueError("pair_a and pair_b must have the same length")
+    chunk = max(1, int(chunk))
+    scores = np.empty(len(pair_a), dtype=np.float32)
+    for start in range(0, len(pair_a), chunk):
+        end = min(start + chunk, len(pair_a))
+        scores[start:end] = (
+            embeds[pair_a[start:end]] * embeds[pair_b[start:end]]
+        ).sum(axis=1).astype(np.float32, copy=False)
+    return scores
+
+
 def sample_pair_scores(
     embeds: np.ndarray,
     labels: np.ndarray,
@@ -83,7 +103,7 @@ def sample_pair_scores(
 
     pair_a = np.array([p[0] for p in all_pairs], dtype=np.int32)
     pair_b = np.array([p[1] for p in all_pairs], dtype=np.int32)
-    scores = (embeds[pair_a] * embeds[pair_b]).sum(axis=1).astype(np.float32)
+    scores = chunked_pair_scores(embeds, pair_a, pair_b)
     return {
         "scores": scores,
         "is_genuine": is_genuine,
@@ -220,7 +240,7 @@ def save_score_distribution(path: str | Path, metrics: dict[str, Any]) -> None:
     is_genuine = np.asarray(metrics.get("is_genuine", []))
     pair_a = np.asarray(metrics.get("pair_a", np.arange(len(scores))))
     pair_b = np.asarray(metrics.get("pair_b", np.arange(len(scores))))
-    rows = [
+    rows = (
         {
             "pair_a": int(pair_a[i]) if i < len(pair_a) else "",
             "pair_b": int(pair_b[i]) if i < len(pair_b) else "",
@@ -228,7 +248,7 @@ def save_score_distribution(path: str | Path, metrics: dict[str, Any]) -> None:
             "is_genuine": int(is_genuine[i]),
         }
         for i in range(len(scores))
-    ]
+    )
     write_csv_rows(path, rows, ["pair_a", "pair_b", "score", "is_genuine"])
 
 

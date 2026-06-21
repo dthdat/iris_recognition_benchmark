@@ -17,9 +17,20 @@ This is the continuation document for a human collaborator, Codex, or Claude Cod
 
 The latest collected attempt was killed by `SIGKILL` during epoch 5. A bounded process restart then found a checkpoint saved after epoch 4, but resume failed while restoring PyTorch RNG state because the deserialized value was not accepted as a `torch.ByteTensor`.
 
-The current `experiments/train.py` contains a defensive RNG-state conversion and warning-based fallback (`as_cpu_byte_tensor` and `restore_rng_state`). This code has not been validated by a successful resumed Kaggle run. Also verify that the generated Kaggle runner actually passes `--resume-state` and implements only the intended bounded restart; the current `tools/kaggle_submit.py` training call does not pass that option.
+The current `experiments/train.py` contains a defensive RNG-state conversion and warning-based fallback (`as_cpu_byte_tensor` and `restore_rng_state`). This code has not been validated by a successful resumed Kaggle run. The generated Kaggle runner now passes `--resume-state` and implements one bounded child-process restart. Local tests and dry-run inspection pass, but the path has not been validated by a successful Kaggle run.
 
-Do not claim the blocker is fixed until the resume path has been tested. The next collaborator may own b4 end-to-end, but only through the gated sequence below. Never skip directly to submission and never infer success from partial validation metrics.
+Do not claim the Kaggle blocker is fixed until the resume path completes successfully in a real Kaggle run. The next collaborator may own b4 end-to-end, but only through the gated sequence below. Never skip directly to submission and never infer success from partial validation metrics.
+
+## Local preflight completed on 2026-06-21
+
+- Added CPU resume serialization, RNG restoration, and configuration-mismatch tests.
+- Added memory-bounded pair scoring and streaming score CSV output.
+- Added atomic checkpoint writes and RAM/VRAM/elapsed-time telemetry.
+- Patched the generated runner to pass `--resume-state`, avoid a parent CUDA context, and allow exactly one child restart.
+- `10` local tests pass; compile checks pass.
+- The b4 dry-run bundle compiles, contains six frozen split CSVs, and contains no credential-like files.
+- No Kaggle job was submitted and b4 still has no test metrics.
+- The current YAML selects MobileFaceNet, while historical monitor text references MobileNetV2; verify the intended experiment identity before submission.
 
 ## Required b4 continuation sequence
 

@@ -66,8 +66,8 @@ def to_jsonable(value: Any) -> Any:
 
 
 def write_csv_rows(path: str | os.PathLike[str], rows: Iterable[Mapping[str, Any]], fieldnames: list[str] | None = None) -> None:
-    rows = list(rows)
     if fieldnames is None:
+        rows = list(rows)
         keys: list[str] = []
         for row in rows:
             for key in row:

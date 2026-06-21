@@ -6,6 +6,13 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import torchvision.models as tv_models
+from torch.utils.checkpoint import checkpoint as torch_checkpoint
+
+
+def maybe_checkpoint(module: nn.Module, x: torch.Tensor, enabled: bool) -> torch.Tensor:
+    if enabled and torch.is_grad_enabled() and x.requires_grad:
+        return torch_checkpoint(module, x, use_reentrant=False)
+    return module(x)
 
 
 def conv3x3(in_planes: int, out_planes: int, stride: int = 1) -> nn.Conv2d:

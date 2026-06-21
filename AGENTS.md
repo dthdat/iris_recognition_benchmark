@@ -23,7 +23,7 @@ Current state (2026-06-21):
 - b1 and b3 completed and their frozen splits/results were collected.
 - b4 is incomplete after repeated SIGKILL failures. Its latest bounded restart then failed while restoring a serialized PyTorch RNG state.
 - The current training code contains a defensive RNG-state conversion, but that resume path has not been validated by a successful Kaggle run.
-- The current generated runner must be audited because its training command does not pass `--resume-state`.
+- The generated runner now passes `--resume-state` and has one bounded child-process restart. This is locally tested and dry-run inspected, but not yet validated by a successful Kaggle run.
 - `ours_iresnet_msff_softmask` has not been submitted.
 - A collaborator may continue b4 using the gated workflow in `docs/HANDOFF.md`: local test, infrastructure-only patch, compile, dry-run, bundle inspection, then one controlled submission.
 - Stop on failure. Do not automatically resubmit or continue to the final run.

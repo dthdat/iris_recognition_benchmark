@@ -30,7 +30,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--dataset-source", required=True, help="Kaggle dataset source, e.g. USERNAME/DATASET_SLUG.")
     parser.add_argument("--dataset-root", required=True, help="Kaggle input path, e.g. /kaggle/input/DATASET_SLUG.")
     parser.add_argument("--accelerator", default="NvidiaTeslaT4")
-    parser.add_argument("--timeout", type=int, default=21600)
+    parser.add_argument("--timeout", type=int, default=43200)
     parser.add_argument("--dry-run", action="store_true")
     return parser.parse_args()
 
@@ -87,8 +87,6 @@ import subprocess
 import sys
 import zipfile
 from pathlib import Path
-
-import torch
 
 
 RUN_ID = "{run_id}"
@@ -182,13 +180,27 @@ def run(cmd):
 
 
 def run_training(config_path):
+    resume_path = WORKING / "runs" / RUN_ID / "resume_state.pth"
     cmd = [
-        "python",
+        sys.executable,
         "experiments/train.py",
         "--config",
         config_path,
+        "--resume-state",
+        str(resume_path),
     ]
-    run(cmd)
+    try:
+        run(cmd)
+    except subprocess.CalledProcessError as exc:
+        if exc.returncode not in {-9, 137}:
+            raise
+        if not resume_path.is_file():
+            raise
+        print(
+            "Training child was killed; performing one bounded restart from " + str(resume_path),
+            flush=True,
+        )
+        run(cmd)
 
 
 def copy_bundled_splits(project_root):
@@ -219,18 +231,22 @@ def main():
 
     print("Python:", sys.version.replace("\\n", " "))
     print("Platform:", platform.platform())
-    print("Torch:", torch.__version__)
-    print("CUDA available:", torch.cuda.is_available())
-    if torch.cuda.is_available():
-        print("GPU:", torch.cuda.get_device_name(0))
+    subprocess.run(
+        [
+            "nvidia-smi",
+            "--query-gpu=name,memory.total,memory.free",
+            "--format=csv,noheader",
+        ],
+        check=False,
+    )
     print("Dataset root:", os.environ["IRIS_DATASET_ROOT"])
     print("Run ID:", RUN_ID)
 
     copy_bundled_splits(PROJECT_ROOT)
     config_path = f"experiments/configs/{{RUN_ID}}.yaml"
     run_training(config_path)
-    run(["python", "experiments/evaluate.py", "--run", f"/kaggle/working/runs/{{RUN_ID}}"])
-    run(["python", "experiments/aggregate_results.py"])
+    run([sys.executable, "experiments/evaluate.py", "--run", f"/kaggle/working/runs/{{RUN_ID}}"])
+    run([sys.executable, "experiments/aggregate_results.py"])
     print("Outputs saved under /kaggle/working/runs, /kaggle/working/results, and /kaggle/working/splits")
 
 

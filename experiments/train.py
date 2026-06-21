@@ -2,13 +2,10 @@ from __future__ import annotations
 
 import argparse
 import gc
-import random
 import sys
 import time
-import warnings
 from pathlib import Path
 
-import numpy as np
 import torch
 import torch.nn as nn
 import torch.optim as optim
@@ -23,7 +20,23 @@ from src.io_utils import append_csv_row, ensure_dir, load_yaml, resolve_dataset_
 from src.losses import ArcFaceHead
 from src.metrics import compact_metrics, compute_verification_metrics, save_hist_plot, save_roc_plot, save_score_distribution
 from src.models import build_model, describe_model
-from src.train_utils import autocast_ctx, extract_embeddings, forward_embeddings, get_device, make_grad_scaler, model_summary_text, set_seed, unwrap_model
+from src.train_utils import (
+    atomic_torch_save,
+    autocast_ctx,
+    capture_rng_state,
+    extract_embeddings,
+    forward_embeddings,
+    get_device,
+    log_resources,
+    make_grad_scaler,
+    make_resume_metadata,
+    model_summary_text,
+    restore_rng_state,
+    safe_torch_load,
+    set_seed,
+    unwrap_model,
+    validate_resume_metadata,
+)
 
 
 LOG_FIELDS = [
@@ -64,91 +77,8 @@ def save_best_artifacts(run_dir: Path, metrics: dict, prefix: str = "val") -> No
     save_hist_plot(run_dir / f"genuine_impostor_hist_{prefix}.png", metrics, title=f"{prefix.upper()} Score Distribution")
 
 
-def capture_rng_state() -> dict:
-    state = {
-        "python": random.getstate(),
-        "numpy": np.random.get_state(),
-        "torch": torch.get_rng_state(),
-    }
-    if torch.cuda.is_available():
-        state["cuda"] = torch.cuda.get_rng_state_all()
-    return state
-
-
-def describe_rng_state_type(value) -> str:
-    if isinstance(value, torch.Tensor):
-        return (
-            f"{type(value).__name__}(dtype={value.dtype}, device={value.device}, "
-            f"shape={tuple(value.shape)})"
-        )
-    if isinstance(value, np.ndarray):
-        return f"ndarray(dtype={value.dtype}, shape={value.shape})"
-    if isinstance(value, (list, tuple)):
-        entries = []
-        for item in value[:4]:
-            if isinstance(item, (torch.Tensor, np.ndarray)):
-                entries.append(describe_rng_state_type(item))
-            else:
-                entries.append(type(item).__name__)
-        if len(value) > 4:
-            entries.append("...")
-        return f"{type(value).__name__}(len={len(value)}, items=[{', '.join(entries)}])"
-    return type(value).__name__
-
-
-def as_cpu_byte_tensor(value) -> torch.ByteTensor:
-    if isinstance(value, torch.ByteTensor):
-        return value
-    if not isinstance(value, (list, tuple, np.ndarray, torch.Tensor)):
-        raise TypeError(f"unsupported RNG state type: {type(value).__name__}")
-    if isinstance(value, torch.Tensor):
-        value = value.detach().cpu()
-    return torch.tensor(value, dtype=torch.uint8, device="cpu")
-
-
-def restore_rng_state(state: dict) -> None:
-    print(
-        "RNG state types before restoration: "
-        + ", ".join(
-            f"{name}={describe_rng_state_type(state.get(name))}"
-            for name in ("python", "numpy", "torch", "cuda")
-        ),
-        flush=True,
-    )
-
-    try:
-        random.setstate(state["python"])
-    except Exception as exc:
-        warnings.warn(f"Could not restore Python RNG state; continuing resume: {exc}", RuntimeWarning)
-
-    try:
-        np.random.set_state(state["numpy"])
-    except Exception as exc:
-        warnings.warn(f"Could not restore NumPy RNG state; continuing resume: {exc}", RuntimeWarning)
-
-    try:
-        torch.set_rng_state(as_cpu_byte_tensor(state["torch"]))
-    except Exception as exc:
-        warnings.warn(f"Could not restore PyTorch CPU RNG state; continuing resume: {exc}", RuntimeWarning)
-
-    if torch.cuda.is_available() and "cuda" in state:
-        try:
-            cuda_state = state["cuda"]
-            if not isinstance(cuda_state, (list, tuple)):
-                raise TypeError(f"unsupported CUDA RNG state container: {type(cuda_state).__name__}")
-            torch.cuda.set_rng_state_all([as_cpu_byte_tensor(item) for item in cuda_state])
-        except Exception as exc:
-            warnings.warn(f"Could not restore PyTorch CUDA RNG state; continuing resume: {exc}", RuntimeWarning)
-
-
-def safe_torch_load(path: Path, map_location):
-    try:
-        return torch.load(path, map_location=map_location, weights_only=False)
-    except TypeError:
-        return torch.load(path, map_location=map_location)
-
-
 def main() -> None:
+    job_start = time.time()
     args = parse_args()
     config = load_yaml(args.config)
     if args.max_epochs is not None:
@@ -189,6 +119,7 @@ def main() -> None:
     val_ds = IrisDataset(split["val"]["paths"], split["val"]["labels"], config, augment=False, split_name="open_val")
     train_loader = make_loader(train_ds, config, shuffle=True)
     val_loader = make_loader(val_ds, config, shuffle=False)
+    log_resources("after_dataset_preload", device, job_start)
 
     model = build_model(config).to(device)
     base_model = model
@@ -209,6 +140,9 @@ def main() -> None:
     )
     scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=max(1, int(config["epochs"])), eta_min=1e-6)
     scaler = make_grad_scaler(use_amp)
+    if device.type == "cuda":
+        torch.cuda.reset_peak_memory_stats(device)
+    log_resources("after_model_setup", device, job_start)
 
     summary = model_summary_text(model, arcface, config)
     summary += f"num_classes: {split['num_classes']}\n"
@@ -227,6 +161,7 @@ def main() -> None:
 
     if resume_path is not None and resume_path.is_file():
         resume = safe_torch_load(resume_path, map_location=device)
+        validate_resume_metadata(resume, config, int(split["num_classes"]))
         unwrap_model(model).load_state_dict(resume["model_state_dict"])
         arcface.load_state_dict(resume["arcface_state_dict"])
         optimizer.load_state_dict(resume["optimizer_state_dict"])
@@ -275,13 +210,16 @@ def main() -> None:
                     f"loss {run_loss / max(1, total):.4f} acc {correct / max(1, total):.4f} | {elapsed:.1f}s",
                     flush=True,
                 )
+                log_resources(f"epoch_{epoch+1}_batch_{batch_idx}", device, job_start)
 
         train_loss = run_loss / max(1, total)
         train_acc = correct / max(1, total)
         scheduler.step()
 
         print(f"Epoch {epoch+1:02d}/{config['epochs']} validation start", flush=True)
+        log_resources(f"epoch_{epoch+1}_before_validation", device, job_start)
         val_embeds, val_labels = extract_embeddings(val_loader, unwrap_model(model), device, use_amp=use_amp)
+        log_resources(f"epoch_{epoch+1}_after_embedding_extraction", device, job_start)
         print(f"Epoch {epoch+1:02d}/{config['epochs']} metrics start", flush=True)
         val_metrics = compute_verification_metrics(
             val_embeds,
@@ -292,6 +230,7 @@ def main() -> None:
             impostor_multiplier=int(config.get("impostor_multiplier", 5)),
         )
         saw_val_metrics = True
+        log_resources(f"epoch_{epoch+1}_after_metrics", device, job_start)
 
         improved_any = val_metrics["eer"] < best_val_eer
         improved_meaningful = val_metrics["eer"] < (best_val_eer - float(config.get("early_stop_min_delta", 0.0)))
@@ -318,7 +257,7 @@ def main() -> None:
                 "val_auc": float(val_metrics["auc"]),
                 "config": config,
             }
-            torch.save(checkpoint, run_dir / "best_model.pth")
+            atomic_torch_save(checkpoint, run_dir / "best_model.pth")
             save_best_artifacts(run_dir, val_metrics, prefix="val")
             print(
                 f"  Saved best EER model: val_eer={best_val_eer:.3f}% "
@@ -328,7 +267,7 @@ def main() -> None:
 
         if val_metrics["tar_at_01far"] > best_val_tar_far:
             best_val_tar_far = float(val_metrics["tar_at_01far"])
-            torch.save(
+            atomic_torch_save(
                 {
                     "model_state_dict": unwrap_model(model).state_dict(),
                     "arcface_state_dict": arcface.state_dict(),
@@ -372,6 +311,7 @@ def main() -> None:
         gc.collect()
         if device.type == "cuda":
             torch.cuda.empty_cache()
+        log_resources(f"epoch_{epoch+1}_after_cleanup", device, job_start)
 
         should_stop = False
         if improved_meaningful:
@@ -383,8 +323,9 @@ def main() -> None:
 
         if resume_path is not None:
             resume_path.parent.mkdir(parents=True, exist_ok=True)
-            torch.save(
+            atomic_torch_save(
                 {
+                    "resume_metadata": make_resume_metadata(config, int(split["num_classes"])),
                     "next_epoch": epoch + 1,
                     "model_state_dict": unwrap_model(model).state_dict(),
                     "arcface_state_dict": arcface.state_dict(),
@@ -402,6 +343,7 @@ def main() -> None:
                 resume_path,
             )
             print(f"Saved resume state after epoch {epoch+1}: {resume_path}", flush=True)
+            log_resources(f"epoch_{epoch+1}_after_resume_save", device, job_start)
 
         if should_stop:
             print(f"Early stopping at epoch {epoch+1}", flush=True)

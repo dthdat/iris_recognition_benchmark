@@ -140,3 +140,16 @@ The later sections supersede this intermediate audit.
 - `ours_iresnet_msff_softmask` remains not submitted.
 - Repository policy now requires explicit owner approval before another Kaggle submission.
 - Continuation procedure: `docs/HANDOFF.md`.
+
+
+## b4 local recovery implementation (2026-06-21)
+
+- No Kaggle job was submitted and no metric status changed.
+- Added memory-bounded pair scoring and streaming score-distribution output.
+- Added RAM, available-system-memory, CUDA allocation/reservation, CUDA peak, and elapsed-time telemetry.
+- Added atomic model/resume checkpoint writes and resume configuration validation.
+- The generated runner now passes `--resume-state`, avoids importing Torch in the parent process, and performs at most one child restart.
+- Increased the default Kaggle session timeout from 21,600 to 43,200 seconds.
+- Local verification: `10` tests passed; compile checks passed.
+- Dry-run verification: generated runner compiled, six frozen split CSVs were bundled, and no credential-like files were found.
+- Remaining gate: confirm whether b4 is intended to be historical MobileNetV2 or current MobileFaceNet before one controlled submission.
