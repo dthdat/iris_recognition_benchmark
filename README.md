@@ -68,4 +68,9 @@ Read [CONTRIBUTING.md](CONTRIBUTING.md). Codex reads `AGENTS.md` automatically w
 
 After all four models complete, continue with the analysis and deployment work in [ROADMAP.md](docs/ROADMAP.md).
 
+The measured Jetson Nano B01 comparison for PyTorch FP32, TensorRT FP32, and
+TensorRT FP16 is in [the precision report](results/jetson/JETSON_PRECISION_REPORT.md).
+Reproduction instructions and artifact boundaries are documented in
+[the Jetson benchmark guide](docs/JETSON_BENCHMARK.md).
+
 This repository does not currently declare an open-source license. Public visibility does not grant reuse rights beyond GitHub's terms; add an explicit license if broader reuse is intended.

@@ -22,6 +22,8 @@ data/
 .pytest_cache/
 .coverage
 htmlcov/
+.jetson_benchmark/
+results/jetson/raw/
 __pycache__/
 **/__pycache__/
 **pycache**/
